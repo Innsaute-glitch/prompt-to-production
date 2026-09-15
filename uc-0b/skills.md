@@ -1,7 +1,7 @@
 skills:
   - name: retrieve_policy
     description: Loads the supplied plain-text HR policy and returns its numbered clauses as structured sections.
-    input: "A readable .txt policy file path or UTF-8 text containing the HR leave policy and its numbered clauses."
+    input: "A readable UTF-8 .txt policy file path."
     output: "A structured list of sections, where each item contains the clause number and the exact clause text, preserving the source order."
     error_handling: "Reject missing, unreadable, non-text, or empty input. Do not infer missing clauses. If numbering is ambiguous or a clause boundary cannot be determined, retain the exact text and flag the affected section for review."
 

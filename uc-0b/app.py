@@ -12,6 +12,7 @@ from typing import List, Tuple
 
 
 CLAUSE_RE = re.compile(r"^\s*(\d+\.\d+)\s+(.*\S)\s*$")
+SECTION_HEADING_RE = re.compile(r"^\d+\.\s+\S")
 
 
 def retrieve_policy(path: str) -> List[Tuple[str, str]]:
@@ -51,12 +52,20 @@ def retrieve_policy(path: str) -> List[Tuple[str, str]]:
             current_number = match.group(1)
             current_parts = [match.group(2)]
         elif current_number is not None and line:
-            # Only indented lines can continue a clause. This prevents section
-            # headings and decorative separator lines from being absorbed into
-            # the preceding clause.
-            is_indented = raw_line[:1].isspace()
             is_separator = not any(character.isalnum() for character in line)
-            if is_indented and not is_separator:
+            if is_separator:
+                # Decorative separator lines are not policy content.
+                continue
+            if raw_line[:1].isspace():
+                # Indented lines continue the current clause.
+                current_parts.append(line)
+            elif SECTION_HEADING_RE.match(line):
+                # Section headings such as "2. ANNUAL LEAVE" are structure,
+                # not clause content.
+                continue
+            else:
+                # A non-indented, non-heading line inside a clause may be an
+                # unindented continuation. Preserve it rather than dropping it.
                 current_parts.append(line)
 
     finish_clause()
@@ -78,7 +87,7 @@ def summarize_policy(clauses: List[Tuple[str, str]]) -> str:
         raise ValueError("Cannot summarize an empty clause list")
 
     lines = [
-        "HR EMPLOYEE LEAVE POLICY — CLAUSE-PRESERVING SUMMARY",
+        "HR EMPLOYEE LEAVE POLICY - CLAUSE-PRESERVING SUMMARY",
         "Source: supplied HR leave policy",
         "",
     ]

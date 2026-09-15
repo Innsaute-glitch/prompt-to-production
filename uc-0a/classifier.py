@@ -7,7 +7,6 @@ from the fixed assignment taxonomy.
 import argparse
 import csv
 from pathlib import Path
-from typing import Dict
 
 
 CATEGORIES = {
@@ -43,16 +42,16 @@ def classify_complaint(row: dict) -> dict:
     """Classify one row and return complaint_id, category, priority, reason, flag."""
     complaint_id = (row.get("complaint_id") or "").strip()
     description = (row.get("description") or "").strip()
-    lowered = description.lower()
 
-    if not description:
+    if not complaint_id or not description:
         return {
             "complaint_id": complaint_id,
             "category": "Other",
             "priority": "Standard",
-            "reason": "The description is missing, so no supported category can be assigned.",
+            "reason": "Required complaint fields are missing or malformed.",
             "flag": "NEEDS_REVIEW",
         }
+    lowered = description.lower()
 
     # Specific infrastructure terms take precedence over broader symptoms.
     if any(term in lowered for term in ("pothole", "potholes")):
@@ -114,7 +113,20 @@ def batch_classify(input_path: str, output_path: str):
         reader = csv.DictReader(infile)
         if not reader.fieldnames:
             raise ValueError("Input CSV has no header row")
-        results = [classify_complaint(row) for row in reader]
+        results = []
+        for row in reader:
+            if None in row:
+                # The row has more columns than the header declares, so its
+                # fields cannot be reliably mapped to the schema.
+                results.append({
+                    "complaint_id": (row.get("complaint_id") or "").strip(),
+                    "category": "Other",
+                    "priority": "Standard",
+                    "reason": "Row has unexpected columns that do not match the header.",
+                    "flag": "NEEDS_REVIEW",
+                })
+            else:
+                results.append(classify_complaint(row))
 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
