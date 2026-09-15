@@ -1,11 +1,12 @@
 """UC-0A municipal complaint classifier.
 
-The rules deliberately use only the complaint description and always emit values
-from the fixed assignment taxonomy.
+The rules deliberately use only the complaint row and always emit values from
+the fixed assignment taxonomy.
 """
 
 import argparse
 import csv
+import re
 from pathlib import Path
 
 
@@ -26,16 +27,50 @@ SEVERITY_KEYWORDS = (
     "injury", "child", "school", "hospital", "ambulance", "fire",
     "hazard", "fell", "collapse",
 )
+REQUIRED_INPUT_FIELDS = {"complaint_id", "description"}
+
+
+def _find_term(text: str, terms):
+    """Return the exact source span matching a term, or None.
+
+    A word boundary at the beginning avoids matching unrelated words, while
+    the trailing word characters allow the assignment keyword ``child`` to
+    match the source word ``children`` and ``injury`` to match ``injuries``.
+    """
+    for term in terms:
+        pattern = r"(?<!\w)" + re.escape(term).replace(r"\ ", r"\s+") + r"\w*"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return None
 
 
 def _evidence(description: str, terms) -> str:
-    """Return a complete exact word or phrase from the description."""
-    lowered = description.lower()
-    for term in terms:
-        if term in lowered:
-            start = lowered.find(term)
-            return description[start : start + len(term)]
-    return description.strip()[:80].strip(" ,.;:")
+    """Return exact words from the description for the reason field."""
+    match = _find_term(description, terms)
+    if match:
+        return match
+    return description.strip()
+
+
+def _review_result(complaint_id: str, description: str, reason_prefix: str) -> dict:
+    """Return a safe review result while still applying mandatory urgency."""
+    matched_severity = _find_term(description, SEVERITY_KEYWORDS)
+    priority = "Urgent" if matched_severity else "Standard"
+    if description:
+        reason = (
+            f'{reason_prefix} The description says "{description}" but no safe '
+            "allowed category can be assigned."
+        )
+    else:
+        reason = f"{reason_prefix} The description is missing, so no safe allowed category can be assigned."
+    return {
+        "complaint_id": complaint_id,
+        "category": "Other",
+        "priority": priority,
+        "reason": reason,
+        "flag": "NEEDS_REVIEW",
+    }
 
 
 def classify_complaint(row: dict) -> dict:
@@ -44,54 +79,39 @@ def classify_complaint(row: dict) -> dict:
     description = (row.get("description") or "").strip()
 
     if not complaint_id or not description:
-        return {
-            "complaint_id": complaint_id,
-            "category": "Other",
-            "priority": "Standard",
-            "reason": "Required complaint fields are missing or malformed.",
-            "flag": "NEEDS_REVIEW",
-        }
-    lowered = description.lower()
+        return _review_result(complaint_id, description, "Required complaint fields are missing or malformed.")
 
-    # Specific infrastructure terms take precedence over broader symptoms.
-    if any(term in lowered for term in ("pothole", "potholes")):
-        category, terms = "Pothole", ("pothole",)
-    elif any(term in lowered for term in ("streetlight", "street light", "lights out", "light out")):
-        category, terms = "Streetlight", ("streetlight", "street light", "lights out", "light")
-    elif any(term in lowered for term in ("drain blocked", "blocked drain", "drainage blocked", "clogged drain")):
-        category, terms = "Drain Blockage", ("drain blocked", "blocked drain", "drainage blocked", "clogged drain")
-    elif any(term in lowered for term in ("flood", "flooded", "flooding", "waterlogged")):
-        category, terms = "Flooding", ("flood", "flooded", "flooding", "waterlogged")
-    elif any(term in lowered for term in ("garbage", "waste", "rubbish", "dumped", "dead animal", "bins")):
-        category, terms = "Waste", ("garbage", "waste", "rubbish", "dumped", "dead animal", "bins")
-    elif any(term in lowered for term in ("noise", "music", "loud", "midnight")):
-        category, terms = "Noise", ("noise", "music", "loud", "midnight")
-    elif any(term in lowered for term in ("heritage", "monument", "historic")):
-        category, terms = "Heritage Damage", ("heritage", "monument", "historic")
-    elif any(term in lowered for term in ("heat", "hot pavement", "heatwave")):
-        category, terms = "Heat Hazard", ("heat", "hot pavement", "heatwave")
-    elif any(term in lowered for term in (
-        "road surface", "road cracked", "road damage", "sinking", "footpath",
-        "manhole", "tiles broken", "upturned",
-    )):
-        category, terms = "Road Damage", (
+    category_terms = (
+        ("Pothole", ("pothole",)),
+        ("Streetlight", ("streetlight", "street light", "lights out", "light out")),
+        ("Drain Blockage", ("drain blocked", "blocked drain", "drainage blocked", "clogged drain")),
+        ("Flooding", ("flood", "waterlogged")),
+        ("Waste", ("garbage", "waste", "rubbish", "dumped", "dead animal", "bins")),
+        ("Noise", ("noise", "music", "loud", "midnight")),
+        ("Heritage Damage", ("heritage", "monument", "historic")),
+        ("Heat Hazard", ("heatwave", "heat", "hot pavement")),
+        ("Road Damage", (
             "road surface", "road cracked", "road damage", "sinking", "footpath",
             "manhole", "tiles broken", "upturned",
-        )
-    else:
-        return {
-            "complaint_id": complaint_id,
-            "category": "Other",
-            "priority": "Urgent" if any(word in lowered for word in SEVERITY_KEYWORDS) else "Standard",
-            "reason": f"The description says '{_evidence(description, ())}', but it does not identify one allowed category.",
-            "flag": "NEEDS_REVIEW",
-        }
+        )),
+    )
 
-    severity_word = next((word for word in SEVERITY_KEYWORDS if word in lowered), None)
-    priority = "Urgent" if severity_word else "Standard"
-    reason = f"Classified as {category} because the description says '{_evidence(description, terms)}'"
-    if severity_word:
-        reason += f" and includes the severity word '{severity_word}'"
+    category = None
+    evidence = None
+    for candidate, terms in category_terms:
+        evidence = _find_term(description, terms)
+        if evidence:
+            category = candidate
+            break
+
+    if category is None:
+        return _review_result(complaint_id, description, "The complaint is genuinely ambiguous.")
+
+    matched_severity = _find_term(description, SEVERITY_KEYWORDS)
+    priority = "Urgent" if matched_severity else "Standard"
+    reason = f'Classified as {category} because the description says "{evidence}"'
+    if matched_severity:
+        reason += f' and includes the severity word "{matched_severity}"'
     reason += "."
 
     return {
@@ -104,27 +124,31 @@ def classify_complaint(row: dict) -> dict:
 
 
 def batch_classify(input_path: str, output_path: str):
-    """Classify all readable CSV rows and write one result row for each."""
+    """Classify all rows and write one result row for each readable CSV row."""
     source = Path(input_path)
     if not source.is_file():
         raise ValueError(f"Input CSV does not exist: {input_path}")
 
     with source.open("r", encoding="utf-8-sig", newline="") as infile:
         reader = csv.DictReader(infile)
-        if not reader.fieldnames:
+        fieldnames = set(reader.fieldnames or [])
+        if not fieldnames:
             raise ValueError("Input CSV has no header row")
+        missing = sorted(REQUIRED_INPUT_FIELDS - fieldnames)
+        if missing:
+            raise ValueError("Input CSV is missing required columns: " + ", ".join(missing))
+
         results = []
         for row in reader:
             if None in row:
-                # The row has more columns than the header declares, so its
-                # fields cannot be reliably mapped to the schema.
-                results.append({
-                    "complaint_id": (row.get("complaint_id") or "").strip(),
-                    "category": "Other",
-                    "priority": "Standard",
-                    "reason": "Row has unexpected columns that do not match the header.",
-                    "flag": "NEEDS_REVIEW",
-                })
+                # Keep the row, but do not trust a malformed column mapping.
+                complaint_id = (row.get("complaint_id") or "").strip()
+                description = (row.get("description") or "").strip()
+                results.append(_review_result(
+                    complaint_id,
+                    description,
+                    "The row has unexpected columns that do not match the header.",
+                ))
             else:
                 results.append(classify_complaint(row))
 

@@ -11,16 +11,18 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-CLAUSE_RE = re.compile(r"^\s*(\d+\.\d+)\s+(.*\S)\s*$")
+CLAUSE_RE = re.compile(r"^(\d+\.\d+)\s+(.*\S)\s*$")
 SECTION_HEADING_RE = re.compile(r"^\d+\.\s+\S")
+SEPARATOR_RE = re.compile(r"^[^\w]*$")
 
 
 def retrieve_policy(path: str) -> List[Tuple[str, str]]:
-    """Load a text policy and return its numbered clauses in source order.
+    """Load a UTF-8 text policy and return its numbered clauses in order.
 
-    Wrapped source lines are joined into the clause they belong to. Section
-    headings such as ``2. ANNUAL LEAVE`` are intentionally not treated as
-    clauses because they do not have a second numeric component.
+    Every non-empty policy line must either begin a numbered clause, continue
+    the currently open clause with indentation, or be a section/decorative
+    line. An unexpected unindented line is rejected rather than silently
+    attaching it to a neighboring clause.
     """
     policy_path = Path(path)
     if not policy_path.is_file():
@@ -37,36 +39,48 @@ def retrieve_policy(path: str) -> List[Tuple[str, str]]:
     clauses: List[Tuple[str, str]] = []
     current_number = None
     current_parts: List[str] = []
+    seen_clause = False
 
     def finish_clause() -> None:
+        nonlocal current_number, current_parts
         if current_number is not None:
             clause_text = " ".join(current_parts).strip()
-            if clause_text:
-                clauses.append((current_number, clause_text))
+            if not clause_text:
+                raise ValueError(f"Clause {current_number} has no text")
+            clauses.append((current_number, clause_text))
+            current_number = None
+            current_parts = []
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        match = CLAUSE_RE.match(line)
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        match = CLAUSE_RE.match(raw_line)
         if match:
             finish_clause()
             current_number = match.group(1)
             current_parts = [match.group(2)]
-        elif current_number is not None and line:
-            is_separator = not any(character.isalnum() for character in line)
-            if is_separator:
-                # Decorative separator lines are not policy content.
+            seen_clause = True
+            continue
+
+        if SEPARATOR_RE.fullmatch(stripped):
+            continue
+        if SECTION_HEADING_RE.match(stripped):
+            # A numbered section heading closes the preceding clause.
+            finish_clause()
+            continue
+
+        if current_number is None:
+            if not seen_clause:
+                # Document title, reference, version, and other preamble
+                # metadata are outside the numbered clause inventory.
                 continue
-            if raw_line[:1].isspace():
-                # Indented lines continue the current clause.
-                current_parts.append(line)
-            elif SECTION_HEADING_RE.match(line):
-                # Section headings such as "2. ANNUAL LEAVE" are structure,
-                # not clause content.
-                continue
-            else:
-                # A non-indented, non-heading line inside a clause may be an
-                # unindented continuation. Preserve it rather than dropping it.
-                current_parts.append(line)
+            raise ValueError(f"Unexpected policy text on line {line_number}: {stripped}")
+        if not raw_line[:1].isspace():
+            raise ValueError(
+                f"Ambiguous unindented text on line {line_number}; review the policy input"
+            )
+        current_parts.append(stripped)
 
     finish_clause()
 
@@ -92,8 +106,8 @@ def summarize_policy(clauses: List[Tuple[str, str]]) -> str:
         "",
     ]
     for number, text in clauses:
-        # Keeping each clause as one source-derived sentence avoids silently
-        # losing conditions, thresholds, approvers, deadlines, or exceptions.
+        # One source-derived entry per clause preserves conditions, thresholds,
+        # approvers, deadlines, exceptions, and consequences.
         lines.append(f"Clause {number}: {text}")
     return "\n".join(lines) + "\n"
 
@@ -102,7 +116,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Create a clause-preserving summary of an HR leave policy."
     )
-    parser.add_argument("--input", required=True, help="Path to the .txt policy")
+    parser.add_argument("--input", required=True, help="Path to the UTF-8 .txt policy")
     parser.add_argument("--output", required=True, help="Path for the summary .txt file")
     args = parser.parse_args(argv)
 
