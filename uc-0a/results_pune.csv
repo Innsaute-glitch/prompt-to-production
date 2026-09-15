@@ -1,6 +1,6 @@
 complaint_id,category,priority,reason,flag
 PM-202401,Pothole,Standard,"Classified as Pothole because the description says ""pothole"".",
-PM-202402,Pothole,Urgent,"Classified as Pothole because the description says ""pothole"" and includes the severity word ""children"".",
+PM-202402,Pothole,Urgent,"Classified as Pothole because the description says ""pothole"" and includes the severity word ""School"".",
 PM-202406,Flooding,Standard,"Classified as Flooding because the description says ""flooded"".",
 PM-202408,Drain Blockage,Standard,"Classified as Drain Blockage because the description says ""Drain blocked"".",
 PM-202410,Streetlight,Standard,"Classified as Streetlight because the description says ""streetlights"".",
@@ -14,3 +14,4 @@ PM-202428,Waste,Standard,"Classified as Waste because the description says ""Dea
 PM-202430,Streetlight,Standard,"Classified as Streetlight because the description says ""lights out"".",
 PM-202433,Waste,Standard,"Classified as Waste because the description says ""waste"".",
 PM-202446,Road Damage,Urgent,"Classified as Road Damage because the description says ""Footpath"" and includes the severity word ""fell"".",
+
