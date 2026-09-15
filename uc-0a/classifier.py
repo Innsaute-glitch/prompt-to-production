@@ -23,47 +23,158 @@ CATEGORIES = {
     "Other",
 }
 PRIORITIES = {"Urgent", "Standard", "Low"}
-SEVERITY_KEYWORDS = (
-    "injury", "child", "school", "hospital", "ambulance", "fire",
-    "hazard", "fell", "collapse",
-)
 REQUIRED_INPUT_FIELDS = {"complaint_id", "description"}
 
+# Severity keywords must trigger Urgent. Each is matched as a whole word so
+# "fire" never matches "firewall" and "child" never matches "childcare".
+SEVERITY_RE = re.compile(
+    r"\b(?:"
+    r"injur(?:y|ies|ed)"
+    r"|child(?:ren)?"
+    r"|schools?"
+    r"|hospitals?"
+    r"|ambulances?"
+    r"|fires?"
+    r"|hazards?"
+    r"|fell|fallen"
+    r"|collaps(?:e|es|ed|ing)"
+    r")\b",
+    re.IGNORECASE,
+)
 
-def _find_term(text: str, terms):
-    """Return the exact source span matching a term, or None.
+# Ordered category rules. Earlier entries win, and every pattern is anchored
+# with word boundaries so substring collisions ("flood" in "floodlights",
+# "heat" in "theater") do not misclassify.
+_CATEGORY_RULES = (
+    ("Pothole", (r"\bpotholes?\b",)),
+    ("Streetlight", (
+        r"\bstreet\s*lights?\b",
+        r"\blights?\s+out\b",
+        r"\bunlit\b",
+        r"\bdarkness\b",
+    )),
+    ("Drain Blockage", (
+        r"\b(?:drain|drainage|stormwater\s+drain|main\s+drain)\b"
+        r"[^.!?\n]{0,30}\b(?:blocked|block|clogged|clog)\b",
+    )),
+    ("Flooding", (
+        r"\bfloods?\b",
+        r"\bflooded\b",
+        r"\bflooding\b",
+        r"\bwaterlogged\b",
+        r"\brainwater\b",
+        r"\bstormwater\b",
+    )),
+    ("Waste", (
+        r"\bgarbage\b",
+        r"\bwaste\b",
+        r"\brubbish\b",
+        r"\bdumped\b",
+        r"\bdead\s+animals?\b",
+        r"\bbins?\b",
+    )),
+    ("Noise", (
+        r"\bnoise\w*\b",
+        r"\bmusic\b",
+        r"\bloud\b",
+        r"\bmidnight\b",
+        r"\bdrilling\b",
+        r"\bamplifiers?\b",
+        r"\bband\b",
+    )),
+    ("Heat Hazard", (
+        r"\bheat\w*\b",
+        r"\bhot\s+pavement\b",
+        r"\bmelt(?:ing|ed)?\b",
+        r"\btemperatures?\b",
+        r"\d+\s*�\s*C\b",
+        r"\b\d+\s*degrees?\b",
+    )),
+    ("Road Damage", (
+        r"\broad\s+surface\b",
+        r"\broad\s+cracked\b",
+        r"\broad\s+damage\b",
+        r"\broad\s+collapsed\b",
+        r"\broad\s+subsided\b",
+        r"\bsinking\b",
+        r"\bfootpath\w*\b",
+        r"\bmanholes?\b",
+        r"\btiles?\s+broken\b",
+        r"\bupturned\b",
+        r"\bsubsid(?:ed|ence)\b",
+        r"\bcollapsed\b",
+        r"\bcrater\w*\b",
+        r"\bbuckled\b",
+    )),
+)
 
-    A word boundary at the beginning avoids matching unrelated words, while
-    the trailing word characters allow the assignment keyword ``child`` to
-    match the source word ``children`` and ``injury`` to match ``injuries``.
-    """
-    for term in terms:
-        pattern = r"(?<!\w)" + re.escape(term).replace(r"\ ", r"\s+") + r"\w*"
+_HERITAGE_CONTEXT_RE = re.compile(
+    r"\b(?:heritage|historic(?:al)?|monuments?)\b", re.IGNORECASE
+)
+_HERITAGE_DAMAGE_RE = re.compile(
+    r"\b(?:knocked|broken|defaced|removed|damaged|cracked|collapsed|crumbled|"
+    r"eroded|vandalised|vandalized|destroyed|deteriorated|chipped|scratched|"
+    r"ruined|not\s+restored|not\s+replaced)\b",
+    re.IGNORECASE,
+)
+
+
+def _first_match(text, patterns):
+    """Return the exact source span matching the first pattern, else None."""
+    for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             return match.group(0)
     return None
 
 
-def _evidence(description: str, terms) -> str:
-    """Return exact words from the description for the reason field."""
-    match = _find_term(description, terms)
-    if match:
-        return match
-    return description.strip()
+def _find_severity(description):
+    match = SEVERITY_RE.search(description)
+    return match.group(0) if match else None
 
 
-def _review_result(complaint_id: str, description: str, reason_prefix: str) -> dict:
-    """Return a safe review result while still applying mandatory urgency."""
-    matched_severity = _find_term(description, SEVERITY_KEYWORDS)
+def _evidence_fragment(description, limit=80):
+    """Return one short punctuation-safe quote from the description."""
+    text = (description or "").strip()
+    if not text:
+        return ""
+    match = re.match(r"^(.*?[.!?])(?:\s|$)", text, re.DOTALL)
+    fragment = (match.group(1) if match else text).strip()
+    if len(fragment) > limit:
+        fragment = fragment[:limit].rstrip(" ,;:")
+    return fragment.rstrip(".!?")
+
+
+def _match_category(description):
+    """Return (category, evidence) for the first rule that matches."""
+    for category, patterns in _CATEGORY_RULES:
+        evidence = _first_match(description, patterns)
+        if evidence:
+            return category, evidence
+
+    if _HERITAGE_CONTEXT_RE.search(description):
+        damage = _HERITAGE_DAMAGE_RE.search(description)
+        if damage:
+            return "Heritage Damage", damage.group(0)
+
+    return None, None
+
+
+def _review_result(complaint_id, description, note):
+    """Return Other/NEEDS_REVIEW while preserving mandatory urgency."""
+    matched_severity = _find_severity(description)
     priority = "Urgent" if matched_severity else "Standard"
-    if description:
+    fragment = _evidence_fragment(description)
+    if fragment:
         reason = (
-            f'{reason_prefix} The description says "{description}" but no safe '
-            "allowed category can be assigned."
+            f'{note}; the description says "{fragment}" but no safe allowed '
+            "category can be assigned."
         )
     else:
-        reason = f"{reason_prefix} The description is missing, so no safe allowed category can be assigned."
+        reason = (
+            f"{note}; no safe allowed category can be assigned because the "
+            "description is missing."
+        )
     return {
         "complaint_id": complaint_id,
         "category": "Other",
@@ -73,41 +184,27 @@ def _review_result(complaint_id: str, description: str, reason_prefix: str) -> d
     }
 
 
-def classify_complaint(row: dict) -> dict:
+def classify_complaint(row):
     """Classify one row and return complaint_id, category, priority, reason, flag."""
     complaint_id = (row.get("complaint_id") or "").strip()
     description = (row.get("description") or "").strip()
 
     if not complaint_id or not description:
-        return _review_result(complaint_id, description, "Required complaint fields are missing or malformed.")
+        return _review_result(
+            complaint_id,
+            description,
+            "Required complaint fields are missing or malformed",
+        )
 
-    category_terms = (
-        ("Pothole", ("pothole",)),
-        ("Streetlight", ("streetlight", "street light", "lights out", "light out")),
-        ("Drain Blockage", ("drain blocked", "blocked drain", "drainage blocked", "clogged drain")),
-        ("Flooding", ("flood", "waterlogged")),
-        ("Waste", ("garbage", "waste", "rubbish", "dumped", "dead animal", "bins")),
-        ("Noise", ("noise", "music", "loud", "midnight")),
-        ("Heritage Damage", ("heritage", "monument", "historic")),
-        ("Heat Hazard", ("heatwave", "heat", "hot pavement")),
-        ("Road Damage", (
-            "road surface", "road cracked", "road damage", "sinking", "footpath",
-            "manhole", "tiles broken", "upturned",
-        )),
-    )
-
-    category = None
-    evidence = None
-    for candidate, terms in category_terms:
-        evidence = _find_term(description, terms)
-        if evidence:
-            category = candidate
-            break
-
+    category, evidence = _match_category(description)
     if category is None:
-        return _review_result(complaint_id, description, "The complaint is genuinely ambiguous.")
+        return _review_result(
+            complaint_id,
+            description,
+            "The complaint is genuinely ambiguous",
+        )
 
-    matched_severity = _find_term(description, SEVERITY_KEYWORDS)
+    matched_severity = _find_severity(description)
     priority = "Urgent" if matched_severity else "Standard"
     reason = f'Classified as {category} because the description says "{evidence}"'
     if matched_severity:
@@ -123,7 +220,7 @@ def classify_complaint(row: dict) -> dict:
     }
 
 
-def batch_classify(input_path: str, output_path: str):
+def batch_classify(input_path, output_path):
     """Classify all rows and write one result row for each readable CSV row."""
     source = Path(input_path)
     if not source.is_file():
@@ -136,18 +233,19 @@ def batch_classify(input_path: str, output_path: str):
             raise ValueError("Input CSV has no header row")
         missing = sorted(REQUIRED_INPUT_FIELDS - fieldnames)
         if missing:
-            raise ValueError("Input CSV is missing required columns: " + ", ".join(missing))
+            raise ValueError(
+                "Input CSV is missing required columns: " + ", ".join(missing)
+            )
 
         results = []
         for row in reader:
+            # A None key means the row had columns beyond the header; flag it
+            # but still derive urgency and cite the available description.
             if None in row:
-                # Keep the row, but do not trust a malformed column mapping.
-                complaint_id = (row.get("complaint_id") or "").strip()
-                description = (row.get("description") or "").strip()
                 results.append(_review_result(
-                    complaint_id,
-                    description,
-                    "The row has unexpected columns that do not match the header.",
+                    (row.get("complaint_id") or "").strip(),
+                    (row.get("description") or "").strip(),
+                    "The row has unexpected columns that do not match the header",
                 ))
             else:
                 results.append(classify_complaint(row))
@@ -171,3 +269,4 @@ if __name__ == "__main__":
     except (OSError, ValueError, csv.Error) as exc:
         parser.error(str(exc))
     print(f"Done. Results written to {args.output}")
+
