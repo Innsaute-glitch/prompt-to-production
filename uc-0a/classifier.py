@@ -32,7 +32,7 @@ SEVERITY_RE = re.compile(
     r"injur(?:y|ies|ed)"
     r"|child(?:ren)?"
     r"|schools?"
-    r"|hospitals?"
+    r"|hospital(?:s|ised|ized)?"
     r"|ambulances?"
     r"|fires?"
     r"|hazards?"
@@ -87,7 +87,7 @@ _CATEGORY_RULES = (
         r"\bhot\s+pavement\b",
         r"\bmelt(?:ing|ed)?\b",
         r"\btemperatures?\b",
-        r"\d+\s*�\s*C\b",
+        r"\d+\s*(?:\u00b0|\u00ba)?\s*C\b",
         r"\b\d+\s*degrees?\b",
     )),
     ("Road Damage", (
@@ -114,7 +114,7 @@ _HERITAGE_CONTEXT_RE = re.compile(
 _HERITAGE_DAMAGE_RE = re.compile(
     r"\b(?:knocked|broken|defaced|removed|damaged|cracked|collapsed|crumbled|"
     r"eroded|vandalised|vandalized|destroyed|deteriorated|chipped|scratched|"
-    r"ruined|not\s+restored|not\s+replaced)\b",
+    r"ruined|sinking|subsidence|subsided|not\s+restored|not\s+replaced)\b",
     re.IGNORECASE,
 )
 
@@ -146,16 +146,16 @@ def _evidence_fragment(description, limit=80):
 
 
 def _match_category(description):
-    """Return (category, evidence) for the first rule that matches."""
-    for category, patterns in _CATEGORY_RULES:
-        evidence = _first_match(description, patterns)
-        if evidence:
-            return category, evidence
-
+    """Return (category, evidence) with heritage damage taking precedence."""
     if _HERITAGE_CONTEXT_RE.search(description):
         damage = _HERITAGE_DAMAGE_RE.search(description)
         if damage:
             return "Heritage Damage", damage.group(0)
+
+    for category, patterns in _CATEGORY_RULES:
+        evidence = _first_match(description, patterns)
+        if evidence:
+            return category, evidence
 
     return None, None
 
@@ -165,16 +165,13 @@ def _review_result(complaint_id, description, note):
     matched_severity = _find_severity(description)
     priority = "Urgent" if matched_severity else "Standard"
     fragment = _evidence_fragment(description)
+    clean_note = note.rstrip(".!? ")
     if fragment:
-        reason = (
-            f'{note}; the description says "{fragment}" but no safe allowed '
-            "category can be assigned."
-        )
+        # A malformed row can still have a perfectly classifiable description;
+        # explain the validation problem without claiming the category failed.
+        reason = f'{clean_note}; available description evidence is "{fragment}".'
     else:
-        reason = (
-            f"{note}; no safe allowed category can be assigned because the "
-            "description is missing."
-        )
+        reason = f"{clean_note}; the description is missing."
     return {
         "complaint_id": complaint_id,
         "category": "Other",
@@ -269,4 +266,4 @@ if __name__ == "__main__":
     except (OSError, ValueError, csv.Error) as exc:
         parser.error(str(exc))
     print(f"Done. Results written to {args.output}")
-
+

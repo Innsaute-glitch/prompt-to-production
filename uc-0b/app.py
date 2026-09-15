@@ -15,7 +15,7 @@ CLAUSE_RE = re.compile(r"^(\d+\.\d+)\s+(.*\S)\s*$")
 SECTION_HEADING_RE = re.compile(r"^\d+\.\s+\S")
 SEPARATOR_RE = re.compile(r"^[^\w]*$")
 CLAUSE_NUMBER_ONLY_RE = re.compile(r"^\s*\d+\.\d+\s*$")
-INDENTED_CLAUSE_RE = re.compile(r"^\s+\d+\.\d+\s+")
+INDENTED_CLAUSE_RE = re.compile(r"^\s+\d+\.\d+")
 
 # Complete inventory of the supplied HR leave policy. A summary that silently
 # drops any clause changes the document's meaning, so every reference must be
@@ -67,6 +67,7 @@ def retrieve_policy(path: str) -> List[Tuple[str, str]]:
     clauses: List[Tuple[str, str]] = []
     current_number = None
     current_parts: List[str] = []
+    seen_clause = False
 
     def finish_clause() -> None:
         nonlocal current_number, current_parts
@@ -86,6 +87,7 @@ def retrieve_policy(path: str) -> List[Tuple[str, str]]:
         clause_match = CLAUSE_RE.match(raw_line)
         if clause_match:
             finish_clause()
+            seen_clause = True
             current_number = clause_match.group(1)
             current_parts = [clause_match.group(2)]
             continue
@@ -106,9 +108,13 @@ def retrieve_policy(path: str) -> List[Tuple[str, str]]:
             continue
 
         if current_number is None:
-            # Title, reference, version, and other preamble metadata sit before
-            # the first numbered clause and are not part of the inventory.
-            continue
+            if not seen_clause:
+                # Title, reference, version, and other preamble metadata sit before
+                # the first numbered clause and are not part of the inventory.
+                continue
+            raise ValueError(
+                f"Unexpected policy text on line {line_number}: {stripped}"
+            )
 
         if not raw_line[:1].isspace():
             raise ValueError(
@@ -137,6 +143,7 @@ def summarize_policy(clauses: List[Tuple[str, str]]) -> str:
     """Create a clause-referenced summary without changing source meaning."""
     if not clauses:
         raise ValueError("Cannot summarize an empty clause list")
+    _validate_inventory(clauses)
 
     for number, text in clauses:
         if not number or not (text or "").strip():
@@ -178,4 +185,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
+
