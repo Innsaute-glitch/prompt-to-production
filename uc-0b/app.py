@@ -56,10 +56,13 @@ def retrieve_policy(path: str) -> List[Tuple[str, str]]:
         if not stripped:
             continue
         match = CLAUSE_RE.match(raw_line)
+        if not match and re.match(r"^\s*\d+\.\d+\s*$", raw_line):
+            raise ValueError(f"Clause on line {line_number} has no text")
+        if not match and re.match(r"^\s+\d+\.\d+\s+", raw_line):
+            raise ValueError(
+                f"Ambiguous indented clause on line {line_number}; review the policy input"
+            )
         if match:
-            finish_clause()
-            current_number = match.group(1)
-            current_parts = [match.group(2)]
             seen_clause = True
             continue
 
